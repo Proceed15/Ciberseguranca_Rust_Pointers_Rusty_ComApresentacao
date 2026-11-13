@@ -1,0 +1,302 @@
+================================================================================
+ROTEIRO DE APRESENTAÇÃO — UIUCTF 2024: RUSTY POINTERS
+Arquivo base dos slides: Safe_Rust_Exploitation.pdf (14 slides)
+================================================================================
+--------------------------------------------------------------------------------
+SLIDE 1 — CAPA: UIUCTF 2024: Rusty Pointers
+Subtítulo no slide: Dissecando um Pwn em Rust sem blocos `unsafe`.
+--------------------------------------------------------------------------------
+[A]
+"Olá a todos. Hoje vamos apresentar a análise e a exploração do desafio Rusty
+Pointers, da edição 2024 do UIUCTF — um desafio de Pwn (exploração de heap)
+classificado como médio-difícil e que teve 36 soluções no evento.
+
+O grande diferencial desse desafio está logo no subtítulo: trata-se de um
+programa escrito em Rust seguro, sem uma única linha dentro de blocos `unsafe`,
+mas que ainda assim permite explorar corrupção de memória na heap até alcançar
+execução arbitrária de código.
+
+Ao longo da apresentação vamos mostrar como fixamos o ambiente e como funciona 
+o furo lógico no compilador que gera um ponteiro pendente (dangling pointer); 
+em seguida, veremos como transformar esse erro em um ataque completo sobre 
+a heap da glibc até capturar a flag."
+
+--------------------------------------------------------------------------------
+SLIDE 2 — Fixação do Ambiente: As Peças do Tabuleiro
+Conteúdo visual: Glibc 2.31 (Ubuntu 20.04), Rustc 1.75.0, terminal com
+`rustc 1.75.0 (82e1608df 2023-12-21) (built from a source tarball)` e
+`ldd (Ubuntu GLIBC 2.31-0ubuntu9.17) 2.31`; diagrama Compilador -> SO.
+--------------------------------------------------------------------------------
+[A]
+"Antes de atacar o código, o primeiro passo foi fixar exatamente o ambiente do
+desafio usando Docker no WSL 2. No nosso Ubuntu local tínhamos versões mais
+recentes do compilador e da biblioteca C, que alteram o comportamento do caso.
+
+Por isso, subimos o container baseado no Ubuntu 20.04, travando duas peças
+fundamentais do tabuleiro, como mostra o diagrama à direita:
+
+1. No lado do compilador, fixamos o `rustc 1.75.0`. Como vemos no terminal do
+   slide, ele aparece como `(built from a source tarball)` porque foi empacotado
+   e compilado pela distribuição a partir do código-fonte oficial. Essa versão
+   ainda é vulnerável ao Soundness Hole da Issue #25860 — enquanto compiladores
+   mais atuais já rejeitam esse código.
+2. No lado do sistema operacional, temos a `glibc 2.31`. Nessa versão não há
+   safe-linking nos ponteiros livres da tcache, e temos acesso irrestrito ao
+   `__free_hook`.
+
+É justamente a combinação de uma lógica falha no compilador com uma heap
+desprotegida no sistema operacional que torna a exploração possível."
+
+--------------------------------------------------------------------------------
+SLIDE 3 — Diagnóstico do Binário: A Matriz de Primitivas
+Conteúdo visual: Tabela com Make a Law (0x7e0 / Unsorted Bin / Leak),
+Make a Note (0x50 / Tcache / Preenchimento limpo) e Make a Rule (0x50 / Tcache /
+UAF e Overlap).
+--------------------------------------------------------------------------------
+[APRESENTADOR A]
+"O binário implementa um sistema de gerenciamento de horários de trens com três
+operações principais de alocação. Como o programa usa `Box` do Rust sem um
+alocador customizado, todas as alocações vão direto para o alocador do sistema
+operacional, que no Linux é o `malloc` e `free` da glibc.
+
+Mapeando os tamanhos e o destino de cada bloco ao ser liberado, chegamos a esta
+matriz de primitivas:
+
+- `Make a Law`: aloca blocos de 2000 bytes, que correspondem a chunks de tamanho
+  `0x7e0`. Quando liberados, vão para a `Unsorted Bin` e o programa imprime os
+  primeiros bytes em hexadecimal — o que nos dá um vazamento da `libc`.
+- `Make a Note`: aloca um `Box<[u8; 64]>`, que na glibc gera um chunk de `0x50`
+  na `tcache`. Como a Note retorna a propriedade legítima (`Box`), ela serve
+  para preencher a heap de forma limpa.
+- `Make a Rule`: também aloca 64 bytes (`0x50` na `tcache`), mas em vez de
+  devolver o `Box`, retorna uma referência `&'static mut [u8; 64]` já liberada,
+  gerando a primitiva de Use-After-Free (UAF) e overlap."
+
+--------------------------------------------------------------------------------
+SLIDE 4 — O Furo de Inferência (Issue #25860)
+Conteúdo visual: Código de `S` e `get_ptr` com `ident` e `let f: fn(_, ...)`,
+destacando "Testemunha Estática" e "Buraco de Inferência".
+--------------------------------------------------------------------------------
+[APRESENTADOR A]
+"Mas como é possível produzir um Use-After-Free em Rust sem usar nenhum bloco
+`unsafe`? A resposta está na função `get_ptr`, que explora a Issue #25860 do
+compilador Rust — aberta há mais de nove anos — abusando da coerção de
+Higher-Ranked Trait Bounds (HRTBs).
+
+Reparem nos três elementos destacados no código:
+
+1. Primeiro, temos a constante `S: &&() = &&()`, a Testemunha Estática. Como é
+   definida fora de qualquer função, seu tipo real é `&'static &'static ()`.
+2. Segundo, dentro de `get_ptr`, existe a função auxiliar `ident`. Ela recebe
+   `_val_a: &'a &'b ()` e `val_b: &'b mut T`, devolvendo `&'a mut T`.
+   Isoladamente, `ident` é totalmente válida: para o tipo `&'a &'b ()` existir,
+   o empréstimo interno `'b` precisa sobreviver ao externo `'a`. Assim, esse
+   argumento atua como uma testemunha garantindo a relação entre os lifetimes.
+3. O furo acontece na linha do ponteiro de função `f`, o Buraco de Inferência:
+   `let f: fn(_, &'a mut T) -> &'b mut T = ident;`.
+   Se `get_ptr` chamasse `ident(S, x)` diretamente, o compilador rejeitaria o
+   código porque sabe que `'a` pode não sobreviver a `'b`. Mas ao usar `_` na
+   assinatura de `f` e passar `S` em `f(S, x)`, o compilador infere o primeiro
+   argumento como `&'static &'static ()` e perde o vínculo entre `'a` e `'b`."
+
+--------------------------------------------------------------------------------
+SLIDE 5 — Iludindo o Compilador: Ciclo de Vida (Lifespan)
+Conteúdo visual: Comparação "O que o compilador espera" vs "A realidade", e
+diagrama com escopo de 'buffer' ('a), retorno genérico ('b) e 'static via S
+marcado como Verificado.
+--------------------------------------------------------------------------------
+[APRESENTADOR A]
+"Aqui vemos o impacto dessa brecha no verificador de lifetimes do compilador.
+
+O que o compilador espera, pela regra matemática do borrow checker, é que o
+empréstimo interno sempre sobreviva ao externo — garantindo que nenhuma
+referência viva mais do que o dado original.
+
+Na realidade, ao passar a constante estática `S` (`&'static &'static ()`) pelo
+buraco de inferência, a restrição é satisfeita com `'static`, permitindo que
+uma referência local expanda sua vida útil infinitamente.
+
+Como ilustra o diagrama, mesmo com o escopo real da variável `buffer` sendo
+curto, o retorno genérico ganha o lifetime `'static` injetado via `S` e o
+compilador marca tudo como 'Verificado'."
+
+--------------------------------------------------------------------------------
+SLIDE 6 — O Nascimento do Dangling Pointer
+Conteúdo visual: Código de `get_rule()` e diagrama de `Box (0x50)` passando por
+`Drop() / glibc free()` (triturador) enquanto retorna `&'static mut [u8; 64]`.
+--------------------------------------------------------------------------------
+[APRESENTADOR A]
+"No slide 6 vemos exatamente como o ponteiro pendente nasce dentro de
+`get_rule()`.
+
+1. `Box::new([0; LEN])` aloca 64 bytes na heap (chunk `0x50` na tcache).
+2. `get_rule()` passa `&mut buffer` para `get_ptr()`, estendendo o lifetime
+   da referência mutável para `'static`.
+3. Quando `get_rule()` termina, `buffer` sai de escopo e, como ilustra o
+   triturador, o Rust chama o `Drop` automaticamente e executa `free()` na
+   glibc, devolvendo o chunk para a `tcache`.
+4. Ainda assim, a referência `&'static mut [u8; 64]` sobrevive ao seu dono e
+   fica armazenada no vetor `rules`.
+
+Demonstramos isso na prática compilando um PoC mínimo (`/tmp/poc_uaf.rs`) dentro
+do container: logo após o `drop` do `Box`, a leitura pela referência já expunha
+metadados da `tcache`; e após uma nova alocação de 64 bytes preenchida com
+`0x41`, a referência pendente passou a ecoar `[41, 41, ...]`, provando controle
+de leitura e escrita sobre o bloco livre.
+
+Agora passo a palavra para o próximo apresentador continuar com a exploração
+da heap."
+--------------------------------------------------------------------------------
+SLIDE 7 — Ataque Fase 1: Vazamento da Libc (The Leak)
+Conteúdo visual: Chunk de 2000 bytes (0x7e0) na Unsorted Bin com PREV_SIZE,
+SIZE (0x7f0), FD e BK apontando para main_arena -> `0x7a4cc7a8a... + offset`.
+--------------------------------------------------------------------------------
+[APRESENTADOR B]
+"Continuando a partir da primitiva de UAF, antes de redirecionar ponteiros na
+heap precisamos derrotar o ASLR e descobrir o endereço base da `libc`. Essa é a
+Fase 1 do ataque, usando a opção `Make a Law`.
+
+Ao criar e liberar uma `Law` de 2000 bytes (`0x7e0`), o chunk vai para a
+`Unsorted Bin`, que é uma lista duplamente ligada na `glibc`. Quando isso
+acontece, o alocador grava nos campos `FD` e `BK` do chunk livre ponteiros que
+apontam diretamente para a `main_arena` dentro da `libc`.
+
+A função `Make a Law` realoca o bloco e imprime os primeiros 16 bytes em
+hexadecimal. Subtraindo o offset medido para a `libc-2.31.so` distribuída
+(`0x1ecbe0`) pela fórmula `libc_base = leak - 0x1ecbe0`, obtemos a base exata
+da `libc` — neste exemplo, na faixa de `0x7a4cc7a8a000` — e calculamos onde
+estão `__free_hook` e `system()`."
+
+--------------------------------------------------------------------------------
+SLIDE 8 — Ataque Fase 2: Preparando o Palco (Tcache Setup)
+Conteúdo visual: Fila LIFO `[0x50, contagem: 4]` encadeando Chunk Note 3 ->
+Chunk Note 2 -> Chunk Note 1 -> Chunk Note 0.
+--------------------------------------------------------------------------------
+[A]
+"Na Fase 2, preparamos o estado da `tcache` antes de fazer o envenenamento. A
+`tcache` opera como uma fila LIFO (Last-In, First-Out) e mantém um contador de
+entradas por bucket.
+
+Se tentarmos o ataque com o bucket quase vazio ou com apenas uma ou duas `Notes`
+liberadas, o estado da `tcache` pode falhar no alinhamento e impedir que a
+segunda alocação atinja o alvo — algo que observamos nos primeiros testes com
+o script original.
+
+Para garantir estabilidade antes do overlap, criamos 4 blocos `Note` sadios e
+os liberamos em ordem decrescente (3, 2, 1 e 0). Assim deixamos o bucket `0x50`
+com contagem 4 e uma cadeia previsível: Chunk Note 3 no topo, apontando para
+Note 2, Note 1 e Note 0."
+
+--------------------------------------------------------------------------------
+SLIDE 9 — Ataque Fase 3: Tcache Poisoning
+Conteúdo visual: `Rule (Dangling)` sobre `Chunk Note 3` redirecionando ponteiro
+`fd` para `__free_hook (Glibc Target)`; código `edit_rule(0, p64(free_hook))`.
+--------------------------------------------------------------------------------
+[A]
+"Com a fila preparada, entramos na Fase 3: o Tcache Poisoning.
+
+Ao chamar `create_rule()`, a `Rule` consome o primeiro chunk livre da `tcache`
+(`Chunk Note 3`) e o devolve imediatamente para a lista ao sair de `get_rule()`,
+mas mantendo sobre ele o nosso Dangling Pointer em `rules[0]`.
+
+Como a `glibc 2.31` não possui safe-linking (introduzido apenas na `glibc 2.32`),
+os ponteiros `fd` dos chunks livres ficam gravados sem proteção ou ofuscação.
+Chamamos então `edit_rule(0, p64(free_hook))` preenchendo os 64 bytes do
+buffer para sobrescrever o `fd` legítimo (que apontava para `Chunk Note 2`)
+com o endereço de `__free_hook`."
+
+--------------------------------------------------------------------------------
+SLIDE 10 — Ataque Fase 4: O Sequestro de Fluxo (Hijacking)
+Conteúdo visual: Três blocos: `create_note()` -> Consome Chunk Note 3;
+`create_note()` -> Alocador devolve `__free_hook`; `edit_note(1, p64(system))`.
+--------------------------------------------------------------------------------
+[A]
+"Na Fase 4, executamos o sequestro de fluxo alocando duas `Notes` consecutivas:
+
+1. A primeira chamada `create_note()` consome o `Chunk Note 3` envenenado, o
+   que faz com que `__free_hook` passe a ser o próximo endereço no topo da
+   `tcache`.
+2. A segunda chamada `create_note()` recebe do alocador o próprio endereço de
+   `__free_hook` como área útil da `Note 1`.
+3. Em seguida, executamos `edit_note(1, p64(system))`, escrevendo o endereço de
+   `system()` diretamente dentro de `__free_hook`. A partir desse momento,
+   sempre que `free()` for chamado, a glibc redirecionará a execução para
+   `system()`."
+
+--------------------------------------------------------------------------------
+SLIDE 11 — O Gatilho (Triggering the Exploit)
+Conteúdo visual: Código `edit_note(0, b"/bin/sh\x00")` e `delete_note(0)`;
+diagrama `[ "/bin/sh\x00" ] -> free() -> system() -> $ id`.
+--------------------------------------------------------------------------------
+[A]
+"Com `__free_hook` apontando para `system()`, só falta acionar o gatilho.
+
+Editamos a `Note 0` gravando o payload `b"/bin/sh\x00"` com
+`edit_note(0, b"/bin/sh\x00")`. Em seguida, chamamos explicitamente
+`delete_note(0)` para forçar o `Drop` imediato dessa `Note`.
+
+Quando o Rust libera a `Note 0`, o `free()` da `glibc` é invocado passando o
+ponteiro da string `"/bin/sh"`. Como o gancho `__free_hook` está sobrescrito,
+em vez de uma desalocação normal, `system("/bin/sh")` é acionado e obtemos
+um shell interativo."
+
+--------------------------------------------------------------------------------
+SLIDE 12 — Execução Real (The Live Pwn)
+Conteúdo visual: Terminal mostrando conexão com `127.0.0.1:1337`, caminho de
+`libc-2.31.so`, `libc base: 0x7a4cc7a8a000`, `hook: 0x7a4cc7c78e48`, modo
+interativo e `$ cat flag.txt`.
+--------------------------------------------------------------------------------
+[APRESENTADOR B]
+"Aqui está o registro real da execução ponta a ponta do nosso script adaptado
+(`solve_local.py`) contra o container rodando em `127.0.0.1:1337`.
+
+No terminal vemos o `pwntools` carregando a `libc-2.31.so` distribuída, abrindo
+a conexão e imprimindo os endereços resolvidos em tempo de execução:
+- `libc base`: `0x7a4cc7a8a000` (alinhada em página, terminando em `000`);
+- `hook` (`__free_hook`): `0x7a4cc7c78e48`.
+
+Logo após executar o encadeamento na `tcache`, o script entra em modo interativo
+e envia o comando `cat flag.txt` dentro do container."
+
+--------------------------------------------------------------------------------
+SLIDE 13 — A Promessa do Rust: Uma Reflexão Arquitetural
+Conteúdo visual: Três pontos sobre prova matemática, Soundness Holes e
+mitigações do SO; diagrama com a torre "Matemática de Compilação" rachada ao
+lado de "Mitigações da Glibc".
+--------------------------------------------------------------------------------
+[A]
+"Para concluir, vale destacar a reflexão arquitetural que esse desafio traz.
+
+A segurança de memória do Rust não é simples: ela se apoia em uma prova
+matemática verificada pelo compilador em tempo de compilação. Quando o modelo
+lógico do próprio compilador tem uma falha estrutural — um Soundness Hole como
+a Issue #25860 — a promessa de 'Zero Unsafe' pode desmoronar.
+
+Sem essa garantia matemática, o binário volta a depender exclusivamente das
+mitigações do sistema operacional e da biblioteca C como última linha de defesa.
+Na `glibc 2.31`, sem safe-linking na `tcache` e com `__free_hook` acessível, a
+exploração se completou até a execução de código. Já em ambientes mais novos —
+com compiladores como o `rustc 1.99`, que rejeita o código da `get_ptr`, e
+versões da `glibc` a partir da `2.32` com safe-linking — tanto o bug quanto a
+técnica direta de poisoning são barrados."
+
+--------------------------------------------------------------------------------
+SLIDE 14 — Desafio Concluído.
+Conteúdo visual: `$ cat flag.txt` exibindo
+`uiuctf{who_knew_if_my_pointers_lived_forever_they_would_rust???}`.
+--------------------------------------------------------------------------------
+[A]
+"E no último slide temos a bandeira oficial recuperada pela execução do comando
+`cat flag.txt` no shell obtido dentro do container:
+
+`uiuctf{who_knew_if_my_pointers_lived_forever_they_would_rust???}`
+
+Uma referência direta ao bug do desafio: ponteiros que deveriam viver para
+sempre com lifetime `'static`, mas acabaram 'enferrujando' após a liberação na
+memória.
+
+Muito obrigado pela atenção — ficamos à disposição para dúvidas."
+
+================================================================================
+FIM DO ROTEIRO
+================================================================================
